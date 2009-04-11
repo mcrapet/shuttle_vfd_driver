@@ -4,6 +4,7 @@
 KSRC ?= /lib/modules/$(shell uname -r)/build
 
 EXTRA_CFLAGS += -Wall
+DIST_VERSION = 1.01
 
 CONFIG_SHUTTLE_VFD := m
 
@@ -13,8 +14,10 @@ all:
 	$(MAKE) -C $(KSRC) M=$(PWD) modules
 
 clean:
-	rm -rf *.ko *.mod.* *.o .*.o.d .*.cmd .tmp_versions Module.symvers *.order
+	$(MAKE) -C $(KSRC) M=$(PWD) clean
 
 distclean: clean
 	rm -rf cscope.* *~
 
+dist: Makefile shuttle_vfd.c
+	@tar -cf - $< | gzip -9 > shuttle_vfd_driver-$(DIST_VERSION).tar.gz

@@ -48,7 +48,6 @@
 #define SHUTTLE_VFD_RTC_DEVICE          "rtc0"
 #endif
 #define SHUTTLE_VFD_GREETING_MSG        "Linux"
-#define SHUTTLE_VFD_GREETING_MSG_LENGTH (sizeof(SHUTTLE_VFD_GREETING_MSG)-1)
 
 // VFD physical dimensions
 #define SHUTTLE_VFD_WIDTH               20
@@ -106,9 +105,9 @@
 
 
 /* Module parameter */
-static int initial_greeting_msg;
-module_param(initial_greeting_msg, bool, S_IRUGO);
-MODULE_PARM_DESC(initial_greeting_msg, "Display greeting message");
+static char message[SHUTTLE_VFD_WIDTH+1] = SHUTTLE_VFD_GREETING_MSG;
+module_param_string(initial_msg, message, sizeof(message), S_IRUGO);
+MODULE_PARM_DESC(initial_msg, "Set initial message (" __MODULE_STRING(SHUTTLE_VFD_WIDTH) " chars max)");
 
 
 /* table of devices that work with this driver */
@@ -594,10 +593,17 @@ static int shuttle_vfd_probe(struct usb_interface *interface,
 
   vfd_reset_cursor(dev, true);
 
-  if (initial_greeting_msg) {
-    memset(&dev->screen[0], 0x20, SHUTTLE_VFD_WIDTH);
-    memcpy(&dev->screen[(SHUTTLE_VFD_WIDTH-SHUTTLE_VFD_GREETING_MSG_LENGTH)/2],
-        SHUTTLE_VFD_GREETING_MSG, SHUTTLE_VFD_GREETING_MSG_LENGTH);
+  if (message[0] != '\0') {
+    size_t len = strlen(message);
+
+    if (len > SHUTTLE_VFD_WIDTH) {
+      dev_dbg(&interface->dev, "initial message is too long, truncating\n");
+      len = SHUTTLE_VFD_WIDTH;
+    } else {
+      memset(&dev->screen[0], 0x20, SHUTTLE_VFD_WIDTH);
+    }
+
+    memcpy(&dev->screen[(SHUTTLE_VFD_WIDTH-len)/2], message, len);
     vfd_set_text(dev, SHUTTLE_VFD_WIDTH);
   }
 
@@ -672,7 +678,7 @@ module_init(shuttle_vfd_init);
 module_exit(shuttle_vfd_exit);
 
 MODULE_DESCRIPTION("Shuttle VFD driver");
-MODULE_VERSION("1.00");
+MODULE_VERSION("1.01");
 MODULE_AUTHOR("Matthieu Crapet <mcrapet@gmail.com>");
 MODULE_LICENSE("GPL");
 
