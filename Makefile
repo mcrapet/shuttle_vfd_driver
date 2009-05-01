@@ -20,4 +20,4 @@ distclean: clean
 	rm -rf cscope.* *~
 
 dist: Makefile shuttle_vfd.c
-	@tar -cf - $< | gzip -9 > shuttle_vfd_driver-$(DIST_VERSION).tar.gz
+	@tar -zcf shuttle_vfd_driver-$(DIST_VERSION).tar.gz $?
