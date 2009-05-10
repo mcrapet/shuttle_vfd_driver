@@ -38,12 +38,16 @@
 #include <linux/kernel.h>
 #include <linux/rtc.h>
 #include <linux/usb.h>
+#include <linux/timer.h>
 #include <linux/version.h>
+#include <linux/workqueue.h>
+#include <linux/kernel_stat.h>
+#include <asm/cputime.h>
 
 #define SHUTTLE_VFD_VENDOR_ID           0x051C
 
 #if defined(CONFIG_RTC_HCTOSYS_DEVICE)
-#define SHUTTLE_VFD_RTC_DEVICE CONFIG_RTC_HCTOSYS_DEVICE
+#define SHUTTLE_VFD_RTC_DEVICE          CONFIG_RTC_HCTOSYS_DEVICE
 #else
 #define SHUTTLE_VFD_RTC_DEVICE          "rtc0"
 #endif
@@ -94,14 +98,18 @@
 #define DRIVER_ICON_CLEAR               (1 << 28)
 #define DRIVER_ICON_SET                 (1 << 29)
 
-#define DRIVER_MODE_TEXT                0
-#define DRIVER_MODE_CLOCK               1
+#define DEC_AS_HEX(v)                   (((v)/10 * 16) + ((v)%10))
+#define DRIVER_VFD_REFRESH              (jiffies + (HZ * 1)) // 1s
 
+// mode
+#define DRIVER_MODE_TEXT                0
+#define DRIVER_MODE_HW_CLOCK            1
+#define DRIVER_MODE_SW_CPU              2
+
+// text_style
 #define DRIVER_STYLE_TEXT_ALIGN_LEFT    0
 #define DRIVER_STYLE_TEXT_ALIGN_RIGHT   1
 #define DRIVER_STYLE_TEXT_ALIGN_CENTER  2
-
-#define DEC_AS_HEX(v)                   (((v)/10 * 16) + ((v)%10))
 
 
 /* Module parameter */
@@ -110,7 +118,7 @@ module_param_string(initial_msg, message, sizeof(message), S_IRUGO);
 MODULE_PARM_DESC(initial_msg, "Set initial message (" __MODULE_STRING(SHUTTLE_VFD_WIDTH) " chars max)");
 
 
-/* table of devices that work with this driver */
+/* Table of devices that work with this driver */
 static struct usb_device_id shuttle_vfd_table [] = {
   { USB_DEVICE(SHUTTLE_VFD_VENDOR_ID, 0x0003) },
   { USB_DEVICE(SHUTTLE_VFD_VENDOR_ID, 0x0005) },
@@ -146,7 +154,7 @@ const struct vfd_icons icons[] = {
 };
 
 
-/* working structure */
+/* Working structure */
 struct shuttle_vfd {
   struct usb_device *udev;
   unsigned long icons_mask;
@@ -154,7 +162,73 @@ struct shuttle_vfd {
   unsigned long text_style;
   unsigned char packet[SHUTTLE_VFD_PACKET_SIZE];
   unsigned char screen[SHUTTLE_VFD_WIDTH];
+
+  struct work_struct work;
+  struct timer_list vfd_timer;
+  int vfd_timer_reschedule;
+
+  /* used for cpu load */
+  cputime64_t used, total;
 };
+
+/* Local prototypes */
+static void vfd_timer(unsigned long);
+static int vfd_send_packet(struct shuttle_vfd *);
+static void vfd_set_clock(struct shuttle_vfd *);
+static int vfd_parse_icons(const char *, size_t, unsigned long *);
+static inline void vfd_set_text(struct shuttle_vfd *, size_t);
+static void vfd_periodic_work(struct work_struct *work);
+
+
+static void vfd_periodic_work(struct work_struct *w)
+{
+  struct shuttle_vfd *vfd = container_of(w, struct shuttle_vfd, work);
+
+  cputime64_t user, nice, system, idle, r;
+  int i;
+
+  user = nice = system = idle = cputime64_zero;
+  for_each_possible_cpu(i) {
+    user = cputime64_add(user, kstat_cpu(i).cpustat.user);
+    nice = cputime64_add(nice, kstat_cpu(i).cpustat.nice);
+    system = cputime64_add(system, kstat_cpu(i).cpustat.system);
+    idle = cputime64_add(idle, kstat_cpu(i).cpustat.idle);
+  }
+
+  memset(&vfd->screen[0], 0x0, SHUTTLE_VFD_WIDTH);
+
+  user = cputime64_add(user, nice);
+  user = cputime64_add(user, system);
+  idle = cputime64_add(idle, user); // total (jiffies)
+
+  vfd->used  = cputime64_sub(user, vfd->used);
+  vfd->total = cputime64_sub(idle, vfd->total);
+
+  if (vfd->used == vfd->total)
+    r = cputime64_zero;
+  else
+    r = 1000 * vfd->used / vfd->total;
+
+  i = (int)r;
+
+  sprintf(&vfd->screen[0], "CPU:%2d.%d%%", i/10, i%10);
+  vfd_set_text(vfd, SHUTTLE_VFD_WIDTH);
+
+  vfd->used  = user;
+  vfd->total = idle;
+}
+
+
+static void vfd_timer(unsigned long data)
+{
+  struct shuttle_vfd *vfd = (struct shuttle_vfd *)data;
+
+  if (vfd->vfd_timer_reschedule) {
+    schedule_work(&vfd->work);
+    vfd->vfd_timer.expires = DRIVER_VFD_REFRESH;
+    add_timer(&vfd->vfd_timer);
+  }
+}
 
 
 static int vfd_send_packet(struct shuttle_vfd *vfd)
@@ -204,7 +278,7 @@ static void vfd_set_clock(struct shuttle_vfd *vfd)
   if (rtc == NULL) {
     dev_err(&vfd->udev->dev, "can't get rtc time\n");
   } else {
-    int err = rtc_read_time(rtc, &now);
+    int err = rtc_read_time(rtc, &now); // UTC
 
     if ((err == 0) && (rtc_valid_tm(&now) != 0)) {
       dev_err(&vfd->udev->dev, "invalid rtc time\n");
@@ -307,7 +381,7 @@ static ssize_t set_vfd_text_handler(struct device *dev,
   size_t l;
 
   if (count < SHUTTLE_VFD_WIDTH) {
-    memset(&vfd->screen[0], 0x0, SHUTTLE_VFD_WIDTH);
+    memset(&vfd->screen[0], 0, SHUTTLE_VFD_WIDTH);
   }
 
   /* aplly text style */
@@ -409,6 +483,7 @@ static ssize_t set_vfd_mode_handler(struct device *dev,
 				 const char *buf, size_t count)
 {
   int ret;
+  unsigned long newmode;
   char cmd[6];
 
   struct usb_interface *intf = to_usb_interface(dev);
@@ -419,19 +494,40 @@ static ssize_t set_vfd_mode_handler(struct device *dev,
     return -EINVAL;
 
   if ((strcmp(cmd, "clock") == 0) || (strcmp(cmd, "clk") == 0)) {
-
-    vfd_reset_cursor(vfd, true);
-    vfd->mode = DRIVER_MODE_CLOCK;
-    vfd_set_clock(vfd);
-
+    newmode = DRIVER_MODE_HW_CLOCK;
+  } else if (strcmp(cmd, "cpu") == 0) {
+    newmode = DRIVER_MODE_SW_CPU;
   } else if ((strcmp(cmd, "text") == 0) || (strcmp(cmd, "txt") == 0)) {
-
-    vfd_reset_cursor(vfd, true);
-    vfd->mode = DRIVER_MODE_TEXT;
-    vfd_set_text(vfd, SHUTTLE_VFD_WIDTH);
-
+    newmode = DRIVER_MODE_TEXT;
   } else {
     return -EINVAL;
+  }
+
+  if (newmode != vfd->mode) {
+    if (vfd->mode == DRIVER_MODE_SW_CPU)
+      vfd->vfd_timer_reschedule = 0;
+
+    vfd->mode = newmode;
+
+    switch (newmode) {
+      case DRIVER_MODE_HW_CLOCK:
+        vfd_reset_cursor(vfd, true);
+        vfd_set_clock(vfd);
+        break;
+
+      case DRIVER_MODE_SW_CPU:
+        vfd_reset_cursor(vfd, true);
+        vfd->used = vfd->total = cputime64_zero;
+        vfd->vfd_timer_reschedule = 1;
+        vfd->vfd_timer.expires = jiffies + HZ/2;
+        add_timer(&vfd->vfd_timer);
+        break;
+
+      case DRIVER_MODE_TEXT:
+        vfd_reset_cursor(vfd, true);
+        vfd_set_text(vfd, SHUTTLE_VFD_WIDTH);
+        break;
+    }
   }
 
   return count;
@@ -521,7 +617,8 @@ static ssize_t get_vfd_mode_handler(struct device *dev,
 
   const char *modes[] = {
     "text",
-    "clock"
+    "hw-clock",
+    "sw-cpu"
   };
 
   return sprintf(buf, "%s\n", modes[vfd->mode]);
@@ -577,6 +674,8 @@ static int shuttle_vfd_probe(struct usb_interface *interface,
 
   usb_set_intfdata(interface, dev);
 
+  INIT_WORK(&dev->work, vfd_periodic_work);
+
   /* create device attribute files */
   retval = device_create_file(&interface->dev, &dev_attr_text);
   if (retval)
@@ -607,6 +706,12 @@ static int shuttle_vfd_probe(struct usb_interface *interface,
     vfd_set_text(dev, SHUTTLE_VFD_WIDTH);
   }
 
+  /* setup timer (for auto-refresh features) */
+  init_timer(&dev->vfd_timer);
+  dev->vfd_timer.function = vfd_timer;
+  dev->vfd_timer.data     = (unsigned long)dev;
+  dev->vfd_timer_reschedule = 0;
+
   dev_info(&interface->dev, "Shuttle VFD device now attached\n");
   return 0;
 
@@ -629,6 +734,8 @@ static void shuttle_vfd_disconnect(struct usb_interface *interface)
   struct shuttle_vfd *dev;
 
   dev = usb_get_intfdata (interface);
+
+  del_timer_sync(&dev->vfd_timer);
 
   /* remove device attribute files */
   device_remove_file(&interface->dev, &dev_attr_text);
@@ -678,7 +785,7 @@ module_init(shuttle_vfd_init);
 module_exit(shuttle_vfd_exit);
 
 MODULE_DESCRIPTION("Shuttle VFD driver");
-MODULE_VERSION("1.01");
+MODULE_VERSION("1.02");
 MODULE_AUTHOR("Matthieu Crapet <mcrapet@gmail.com>");
 MODULE_LICENSE("GPL");
 

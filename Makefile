@@ -4,7 +4,7 @@
 KSRC ?= /lib/modules/$(shell uname -r)/build
 
 EXTRA_CFLAGS += -Wall
-DIST_VERSION = 1.01
+DIST_VERSION = $(shell grep MODULE_VERSION shuttle_vfd.c | cut -d\" -f2)
 
 CONFIG_SHUTTLE_VFD := m
 
