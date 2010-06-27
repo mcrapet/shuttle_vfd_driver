@@ -21,3 +21,5 @@ distclean: clean
 
 dist: Makefile shuttle_vfd.c
 	@tar -zcf shuttle_vfd_driver-$(DIST_VERSION).tar.gz $?
+cp:
+	-cp $(obj-m:.o=.ko) $(KSRC)/../misc
