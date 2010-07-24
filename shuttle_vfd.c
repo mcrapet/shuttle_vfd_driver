@@ -155,6 +155,7 @@ const struct vfd_icons icons[] = {
 /* Working structure */
 struct shuttle_vfd {
 	struct usb_device *udev;
+	struct mutex vfd_mutex;
 
 	unsigned long icons_mask;
 	unsigned long mode;
@@ -232,7 +233,10 @@ static void vfd_timer(unsigned long data)
 
 static int vfd_send_packet(struct shuttle_vfd *vfd, unsigned char *packet)
 {
-	int result = usb_control_msg(vfd->udev,
+	int result;
+
+	mutex_lock(&vfd->vfd_mutex);
+	result = usb_control_msg(vfd->udev,
 			usb_sndctrlpipe(vfd->udev, 0),
 			0x09,
 			0x21,
@@ -241,25 +245,31 @@ static int vfd_send_packet(struct shuttle_vfd *vfd, unsigned char *packet)
 			(char *) (packet) ? packet : vfd->packet,
 			SHUTTLE_VFD_PACKET_SIZE,
 			USB_CTRL_GET_TIMEOUT / 4);
+
+	/* this sleep inside the critical section is not very nice,
+	 * but it avoids screw-up display on conccurent access */
+	msleep(SHUTTLE_VFD_SLEEP_MS);
+
+	mutex_unlock(&vfd->vfd_mutex);
 	if (result < 0)
 		dev_err(&vfd->udev->dev, "send packed failed: %d\n", result);
-
-	msleep(SHUTTLE_VFD_SLEEP_MS);
 
 	return result;
 }
 
 static inline void vfd_reset_cursor(struct shuttle_vfd *vfd, bool eraseall)
 {
-	memset(vfd->packet, 0, SHUTTLE_VFD_PACKET_SIZE);
-	vfd->packet[0] = (1 << 4) + 1;
+	unsigned char packet[SHUTTLE_VFD_PACKET_SIZE];
+
+	memset(&packet[0], 0, SHUTTLE_VFD_PACKET_SIZE);
+	packet[0] = (1 << 4) + 1;
 
 	if (eraseall)
-		vfd->packet[1] = 1; // full clear (text + icons)
+		packet[1] = 1; // full clear (text + icons)
 	else
-		vfd->packet[1] = 2; // just reset the text cursor (keep text)
+		packet[1] = 2; // just reset the text cursor (keep text)
 
-	vfd_send_packet(vfd, NULL);
+	vfd_send_packet(vfd, &packet[0]);
 }
 
 /* Built-in feature, will display SHUTTLE_VFD_ICON_CLOCK */
@@ -308,7 +318,7 @@ static inline void vfd_set_text(struct shuttle_vfd *vfd, size_t len)
 		vfd->packet[0] = (9 << 4) + SHUTTLE_VFD_DATA_SIZE;
 		memcpy(vfd->packet + 1, p, SHUTTLE_VFD_DATA_SIZE);
 		p += SHUTTLE_VFD_DATA_SIZE;
-		vfd_send_packet(vfd, &vfd->packet[0]);
+		vfd_send_packet(vfd, NULL);
 	}
 
 	len = len % SHUTTLE_VFD_DATA_SIZE;
@@ -316,19 +326,21 @@ static inline void vfd_set_text(struct shuttle_vfd *vfd, size_t len)
 		memset(&vfd->packet[0], 0, SHUTTLE_VFD_PACKET_SIZE);
 		vfd->packet[0] = (9 << 4) + len;
 		memcpy(vfd->packet + 1, p, len);
-		vfd_send_packet(vfd, &vfd->packet[0]);
+		vfd_send_packet(vfd, NULL);
 	}
 }
 
 static inline void vfd_set_icons(struct shuttle_vfd *vfd)
 {
-	memset(vfd->packet, 0, SHUTTLE_VFD_PACKET_SIZE);
-	vfd->packet[0] = (7 << 4) + 4;
-	vfd->packet[1] = (vfd->icons_mask >> 15) & 0x1F;
-	vfd->packet[2] = (vfd->icons_mask >> 10) & 0x1F;
-	vfd->packet[3] = (vfd->icons_mask >>  5) & 0x1F;
-	vfd->packet[4] = vfd->icons_mask & 0x1F; // each data byte is stored on 5 bits
-	vfd_send_packet(vfd, NULL);
+	unsigned char packet[SHUTTLE_VFD_PACKET_SIZE];
+
+	memset(&packet[0], 0, SHUTTLE_VFD_PACKET_SIZE);
+	packet[0] = (7 << 4) + 4;
+	packet[1] = (vfd->icons_mask >> 15) & 0x1F;
+	packet[2] = (vfd->icons_mask >> 10) & 0x1F;
+	packet[3] = (vfd->icons_mask >>  5) & 0x1F;
+	packet[4] = vfd->icons_mask & 0x1F; // each data byte is stored on 5 bits
+	vfd_send_packet(vfd, &packet[0]);
 }
 
 static int vfd_parse_icons(const char *name, size_t count, unsigned long *val)
@@ -660,6 +672,7 @@ static int shuttle_vfd_probe(struct usb_interface *interface,
 	usb_set_intfdata(interface, dev);
 
 	INIT_WORK(&dev->work, vfd_periodic_work);
+	mutex_init(&dev->vfd_mutex);
 
 	/* create device attribute files */
 	retval = device_create_file(&interface->dev, &dev_attr_text);
@@ -765,6 +778,6 @@ module_init(shuttle_vfd_init);
 module_exit(shuttle_vfd_exit);
 
 MODULE_DESCRIPTION("Shuttle VFD driver");
-MODULE_VERSION("1.03");
+MODULE_VERSION("1.04");
 MODULE_AUTHOR("Matthieu Crapet <mcrapet@gmail.com>");
 MODULE_LICENSE("GPL");
