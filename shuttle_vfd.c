@@ -238,10 +238,10 @@ static int vfd_send_packet(struct shuttle_vfd *vfd, unsigned char *packet)
 	mutex_lock(&vfd->vfd_mutex);
 	result = usb_control_msg(vfd->udev,
 			usb_sndctrlpipe(vfd->udev, 0),
-			0x09,
-			0x21,
-			0x0200,
-			0x0001,
+			0x09,    // SET_REPORT request
+			0x21,    // HID class
+			0x0200,  // Report Type = output ; Report ID = 0 (unused)
+			0x0001,  // Interface
 			(char *) (packet) ? packet : vfd->packet,
 			SHUTTLE_VFD_PACKET_SIZE,
 			USB_CTRL_GET_TIMEOUT / 4);

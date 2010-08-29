@@ -1,0 +1,64 @@
+Linux kernel driver for Shuttle VFD
+
+This (20x1 characters) LCD device is shipped with Shuttle models: SD365GM, SG33G5M.
+
+This driver will add 4 sysfs entries (with 0666 rights).
+Basepath: /sys/bus/usb/drivers/shuttle_vfd/5-2\:1.1/
+
+* text : display up to 20 characters
+* text_style : left, right, center
+* mode : clock (built-in feature), text, cpu (1s refresh)
+* icons : clock, radio, music, dvd, tele, camera, rewind, record, play, pause,
+          stop, ff, reverse, repeat, mute, volXX (1..12).
+	  Plus special names: = (set list, not or), all, none.
+
+It was tested on 2.6.34 on Shuttle SG33G5M.
+
+
+Quick start
+-----------
+Check if hardware is there:
+# lsusb | grep VFD
+Bus 005 Device 003: ID 051c:0005 Shuttle, Inc. VFD Module
+
+Compilation:
+# make
+# insmod ./shuttle_vfd.ko
+
+There should be a better way to do that:
+# echo 'ACTION=="add" DEVPATH=="/module/shuttle_vfd", RUN+="/bin/ln -s /sys/bus/usb/devices/5-2:1.1/text /dev/lcd"' >/etc/udev/rules.d/95-shuttle_vfd.rules
+# /etc/init.d/udev restart
+Or without udev..
+# ln -s /sys/bus/usb/devices/5-2\:1.1/icons /dev/icons
+
+Optional: load at startup
+# make cp
+# depmod
+# cat > /etc/modprobe.d/vfd.conf 
+options shuttle_vfd initial_msg="Hello"
+
+
+Usage
+-----
+$ uname -a >/dev/lcd                 // text will be truncated to 20 characters
+
+$ echo "all" >/dev/icons             // all icons are turned on
+$ echo "play" >/dev/icons            // play icon with be turned off
+
+$ echo "none" >/dev/icons            // all icons are turned off
+$ echo "play" >/dev/icons            // play icon with be turned on
+$ echo "record,repeat" >/dev/icons   // record and repeat leds are on
+$ echo "repeat" >/dev/icons          // record led is off (record led is still on)
+
+$ echo "=,ff" >/dev/icons            // all icons are turned off except ff
+$ echo "play,=,stop" >/dev/icons     // '=' is special keyword meaning "set mask starting all led off"
+
+$ echo "vol5" >/dev/icons            // volume is considered as one unique icon
+$ echo "vol1" >/dev/icons            // volume min (1 "bar")
+$ echo "vol12" >/dev/icons           // volume max (12 "bars")
+
+There are short names of all icons (same order as above):
+clk, rad, mus, cd, tv, cam, rew, rec, pl, pa, st, ff, rev, rep.
+There are also some aliases:
+"mute" is "vol0" ; "all" is "world" ; "clear" is "none".
+

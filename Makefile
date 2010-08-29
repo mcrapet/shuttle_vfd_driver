@@ -2,6 +2,7 @@
 # $ make V=1
 
 KSRC ?= /lib/modules/$(shell uname -r)/build
+KMOD ?= /lib/modules/$(shell uname -r)
 
 EXTRA_CFLAGS += -Wall
 DIST_VERSION = $(shell grep MODULE_VERSION shuttle_vfd.c | cut -d\" -f2)
@@ -22,4 +23,5 @@ distclean: clean
 dist: Makefile shuttle_vfd.c
 	@tar -zcf shuttle_vfd_driver-$(DIST_VERSION).tar.gz $?
 cp:
-	-cp $(obj-m:.o=.ko) $(KSRC)/../misc
+	-cp $(obj-m:.o=.ko) $(KMOD)/misc
+
