@@ -62,6 +62,7 @@
 #define SHUTTLE_VFD_PACKET_SIZE         8
 #define SHUTTLE_VFD_DATA_SIZE           (SHUTTLE_VFD_PACKET_SIZE-1)
 #define SHUTTLE_VFD_SLEEP_MS            24
+#define SHUTTLE_VFD_INTERFACE           1
 
 /* VFD Icons (15+12). vol01-12 is managed as a single icon. */
 #define SHUTTLE_VFD_ICON_CLOCK          (1 << 4)
@@ -241,7 +242,7 @@ static int vfd_send_packet(struct shuttle_vfd *vfd, unsigned char *packet)
 			0x09,    // SET_REPORT request
 			0x21,    // HID class
 			0x0200,  // Report Type = output ; Report ID = 0 (unused)
-			0x0001,  // Interface
+			SHUTTLE_VFD_INTERFACE,
 			(char *) (packet) ? packet : vfd->packet,
 			SHUTTLE_VFD_PACKET_SIZE,
 			USB_CTRL_GET_TIMEOUT / 4);
@@ -657,6 +658,10 @@ static int shuttle_vfd_probe(struct usb_interface *interface,
 {
 	struct shuttle_vfd *dev = NULL;
 	int retval = -ENOMEM;
+
+	if (interface->cur_altsetting->desc.bInterfaceNumber !=
+			SHUTTLE_VFD_INTERFACE)
+		goto error_mem;
 
 	dev = kzalloc(sizeof(struct shuttle_vfd), GFP_KERNEL);
 	if (dev == NULL) {
