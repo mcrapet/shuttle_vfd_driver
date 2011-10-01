@@ -12,7 +12,7 @@ Basepath: /sys/bus/usb/drivers/shuttle_vfd/5-2\:1.1/
           stop, ff, reverse, repeat, mute, volXX (1..12).
 	  Plus special names: = (set list, not or), all, none.
 
-It was tested on 2.6.34 on Shuttle SG33G5M.
+It was tested on 3.0.1 on Shuttle SG33G5M.
 
 
 Quick start
